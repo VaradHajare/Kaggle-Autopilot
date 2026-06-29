@@ -112,11 +112,6 @@ Nine phases run in order. After **every** phase, `RunState` is serialized to
 This is what makes the run resumable and auditable.
 
 ```mermaid
----
-config:
-  look: handDrawn
-  theme: default
----
 flowchart TD
     P0["Bootstrap<br/>(check credentials, accepted rules, and disk space)"]
     P1["Ingestion<br/>(download and unzip the competition data)"]
@@ -133,9 +128,7 @@ flowchart TD
 
     P0 --> P1 --> P2 --> P3 --> P4 --> P5a --> P5b --> P6 --> P7 --> P8 --> P9
     P9 -- "no" --> DONE
-    P9 -- "yes (revisit an earlier phase)" --> P3
-    P9 -. "leaderboard disagreed with CV" .-> P5b
-    P9 -. "the blend barely helped" .-> P6
+    P9 -- "yes, revisit an earlier phase" --> P3
 
     classDef boot fill:#fce4ec,stroke:#c2185b,color:#000;
     classDef llm fill:#ede7f6,stroke:#5e35b1,color:#000;
@@ -202,11 +195,6 @@ then applied to that fold's validation rows. Attempting to run a deferred op
 through the immediate executor raises `DeferredOpError`.
 
 ```mermaid
----
-config:
-  look: handDrawn
-  theme: default
----
 flowchart TD
     START["Start the cross-validation loop"] --> SPLIT{"Take the next fold<br/>(training rows / held-out rows)"}
 
