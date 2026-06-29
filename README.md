@@ -1,5 +1,18 @@
 # Kaggle Auto Competitor
 
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![scikit-learn](https://img.shields.io/badge/scikit--learn-F7931E?logo=scikitlearn&logoColor=white)
+![LightGBM](https://img.shields.io/badge/LightGBM-2E8B57)
+![XGBoost](https://img.shields.io/badge/XGBoost-337AB7)
+![CatBoost](https://img.shields.io/badge/CatBoost-FFCC00?logoColor=black)
+![Optuna](https://img.shields.io/badge/Optuna-2E5FA3?logo=optuna&logoColor=white)
+![pandas](https://img.shields.io/badge/pandas-150458?logo=pandas&logoColor=white)
+![Pydantic](https://img.shields.io/badge/Pydantic-E92063?logo=pydantic&logoColor=white)
+![Typer](https://img.shields.io/badge/Typer-009688?logo=typer&logoColor=white)
+![Google Gemini](https://img.shields.io/badge/Google_Gemini-8E75B2?logo=googlegemini&logoColor=white)
+![Anthropic](https://img.shields.io/badge/Anthropic-D97757?logo=anthropic&logoColor=white)
+![pytest](https://img.shields.io/badge/pytest-0A9EDC?logo=pytest&logoColor=white)
+
 An autonomous, LLM-driven agent that takes a Kaggle competition URL and runs the
 full modeling loop end to end: **download → EDA → feature engineering → model
 selection → Optuna-tuned cross-validation → ensembling → submission → leaderboard
@@ -11,9 +24,10 @@ ranking, ensemble choice), while the deterministic mechanics (cross-validation,
 encoding, validation, post-processing) are plain, tested code. The LLM provider is
 pluggable (`LLM_PROVIDER`): Google Gemini by default, Anthropic Claude optional.
 
-> **Philosophy in one line:** maximize leaderboard score within the compute and
-> submission budget, prefer well-understood methods over novelty, and *never*
-> leak. A higher CV score from a leaky pipeline is worse than an honest lower one.
+> **Philosophy.** Squeeze the most leaderboard score out of a fixed compute and
+> submission budget. Reach for proven methods before clever ones. And guard the
+> validation signal above all else: an inflated CV score from a leaky pipeline is
+> worth less than an honest, lower one.
 
 ---
 
