@@ -1,0 +1,11 @@
+Given the task kind, evaluation metric, dataset size, and feature count, return a
+JSON array of candidate models ranked by priority (1 = highest). Each element:
+
+{ "model": "<estimator class name>", "priority": <int>, "rationale": "<one sentence>" }
+
+Guidance:
+- Prefer gradient boosting (LightGBM, XGBoost, CatBoost) for tabular data.
+- Include a simple linear baseline (LogisticRegression / Ridge) for diversity.
+- Use exact estimator class names from the provided catalog.
+
+Respond ONLY with a JSON array.

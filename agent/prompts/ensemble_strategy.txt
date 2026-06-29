@@ -1,0 +1,11 @@
+Given each model's OOF score, choose an ensembling method. Return JSON:
+
+{ "method": "weighted_average" | "rank_average" | "stacking" | "none",
+  "rationale": "<one sentence>" }
+
+Guidance:
+- "stacking" when several models are competitive and diverse.
+- "weighted_average" / "rank_average" for a quick robust blend.
+- "none" when one model dominates the rest by a clear margin.
+
+Respond ONLY with valid JSON.

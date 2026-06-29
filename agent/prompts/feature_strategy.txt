@@ -1,0 +1,18 @@
+Given the column schema and the allowed operation registry, propose feature
+engineering operations as a JSON array. Each element:
+
+{
+  "operation": "<one of the registry operations>",
+  "columns": ["<input col>", ...],
+  "output_name": "<new column name or prefix>",
+  "rationale": "<one sentence>",
+  "params": { ... optional ... }
+}
+
+Rules:
+- Only use operations listed in the registry.
+- target_encode / group_mean_encode / group_std_encode are applied in-fold later;
+  still request them here if useful.
+- lag / rolling_mean only when is_time_series is true.
+
+Respond ONLY with a JSON array.

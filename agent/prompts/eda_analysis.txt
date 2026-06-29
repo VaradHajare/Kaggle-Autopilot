@@ -1,0 +1,10 @@
+Given the EDA summary JSON, analyze the dataset and return JSON with these keys:
+
+- confirmed_problem_type: one of "binary", "multiclass", "regression", "ranking", "nlp", "cv"
+- high_risk_columns: list of column names that are leakage suspects, near-zero variance, or IDs
+- imputation_strategies: object mapping column name -> one of "median", "mean", "mode", "constant"
+- anomaly_flags: list of short strings describing anomalies (outliers, skew, imbalance)
+- fe_directions: 3-5 short feature-engineering suggestions
+- fe_followups: list of follow-up FE ops to try on later iterations (may be empty)
+
+Respond ONLY with valid JSON.
