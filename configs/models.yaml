@@ -1,0 +1,69 @@
+# Hyperparameter search spaces per model.
+# Each entry maps an Optuna distribution. Types: int, float, categorical.
+# float entries may set log: true for log-uniform sampling.
+
+LGBMClassifier:
+  n_estimators: {type: int, low: 200, high: 2000}
+  learning_rate: {type: float, low: 0.005, high: 0.3, log: true}
+  num_leaves: {type: int, low: 15, high: 255}
+  max_depth: {type: int, low: 3, high: 12}
+  subsample: {type: float, low: 0.5, high: 1.0}
+  colsample_bytree: {type: float, low: 0.5, high: 1.0}
+  reg_alpha: {type: float, low: 1.0e-8, high: 10.0, log: true}
+  reg_lambda: {type: float, low: 1.0e-8, high: 10.0, log: true}
+
+LGBMRegressor:
+  n_estimators: {type: int, low: 200, high: 2000}
+  learning_rate: {type: float, low: 0.005, high: 0.3, log: true}
+  num_leaves: {type: int, low: 15, high: 255}
+  max_depth: {type: int, low: 3, high: 12}
+  subsample: {type: float, low: 0.5, high: 1.0}
+  colsample_bytree: {type: float, low: 0.5, high: 1.0}
+  reg_alpha: {type: float, low: 1.0e-8, high: 10.0, log: true}
+  reg_lambda: {type: float, low: 1.0e-8, high: 10.0, log: true}
+
+XGBClassifier:
+  n_estimators: {type: int, low: 200, high: 2000}
+  learning_rate: {type: float, low: 0.005, high: 0.3, log: true}
+  max_depth: {type: int, low: 3, high: 12}
+  subsample: {type: float, low: 0.5, high: 1.0}
+  colsample_bytree: {type: float, low: 0.5, high: 1.0}
+  reg_alpha: {type: float, low: 1.0e-8, high: 10.0, log: true}
+  reg_lambda: {type: float, low: 1.0e-8, high: 10.0, log: true}
+
+XGBRegressor:
+  n_estimators: {type: int, low: 200, high: 2000}
+  learning_rate: {type: float, low: 0.005, high: 0.3, log: true}
+  max_depth: {type: int, low: 3, high: 12}
+  subsample: {type: float, low: 0.5, high: 1.0}
+  colsample_bytree: {type: float, low: 0.5, high: 1.0}
+
+CatBoostClassifier:
+  iterations: {type: int, low: 200, high: 2000}
+  learning_rate: {type: float, low: 0.005, high: 0.3, log: true}
+  depth: {type: int, low: 3, high: 10}
+  l2_leaf_reg: {type: float, low: 1.0, high: 10.0}
+
+CatBoostRegressor:
+  iterations: {type: int, low: 200, high: 2000}
+  learning_rate: {type: float, low: 0.005, high: 0.3, log: true}
+  depth: {type: int, low: 3, high: 10}
+  l2_leaf_reg: {type: float, low: 1.0, high: 10.0}
+
+RandomForestClassifier:
+  n_estimators: {type: int, low: 100, high: 1000}
+  max_depth: {type: int, low: 3, high: 20}
+  min_samples_split: {type: int, low: 2, high: 20}
+  max_features: {type: categorical, choices: ["sqrt", "log2", null]}
+
+RandomForestRegressor:
+  n_estimators: {type: int, low: 100, high: 1000}
+  max_depth: {type: int, low: 3, high: 20}
+  min_samples_split: {type: int, low: 2, high: 20}
+  max_features: {type: categorical, choices: ["sqrt", "log2", null]}
+
+LogisticRegression:
+  C: {type: float, low: 1.0e-3, high: 100.0, log: true}
+
+Ridge:
+  alpha: {type: float, low: 1.0e-3, high: 100.0, log: true}

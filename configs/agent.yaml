@@ -1,0 +1,30 @@
+# Behaviour flags
+auto_submit: false              # safe default — requires --submit flag or set true here
+max_iterations: 3
+max_training_hours: 4
+allow_neural: false
+token_budget: null
+
+# Submission safety
+lb_poll_timeout_minutes: 10     # how long to poll for LB score before giving up
+
+# CV defaults
+cv_folds: 5
+cv_seed: 42
+
+# Optuna (timeout enforced at study level, not manual clock)
+optuna_n_trials: 50
+optuna_timeout: 3600            # seconds per model — passed to optuna.study.optimize()
+
+# Feature engineering
+max_features: 2000
+text_tfidf_max_features: 500
+text_svd_components: 50
+
+# Ensembling
+min_models_for_ensemble: 2
+ensemble_fallback: "weighted_average"
+
+# Logging
+log_level: INFO
+save_plots: true
