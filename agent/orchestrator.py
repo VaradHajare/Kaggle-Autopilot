@@ -432,12 +432,19 @@ class Orchestrator:
         executed: list[FEOperation] = []
         deferred: list[FEOperation] = []
         errors: list[str] = []
+        identity_cols = set(state.eda_summary.high_cardinality_cols)
 
         for op in ops:
             try:
                 fe_tools.validate_operation(op, is_time_series=state.is_time_series)
             except fe_tools.FEValidationError as exc:
                 errors.append(f"{op.operation}: {exc}")
+                continue
+            if fe_tools.is_identity_unsafe(op, identity_cols):
+                errors.append(
+                    f"{op.operation}: skipped on identity-like column(s) {op.columns} "
+                    "— overfits, does not generalize"
+                )
                 continue
             if op.operation in fe_tools.DEFERRED_OPS:
                 deferred.append(op)
@@ -449,10 +456,16 @@ class Orchestrator:
             except Exception as exc:  # noqa: BLE001 — skip and continue
                 errors.append(f"{op.operation}: {exc}")
 
-        # Build the model-ready base matrix: raw features minus text/datetime,
-        # plus immediate-created columns. Deferred ops are applied in Phase 5b.
-        text_dt = set(state.eda_summary.text_cols) | set(state.eda_summary.datetime_cols)
-        model_cols = [c for c in base_feature_cols if c not in text_dt]
+        # Build the model-ready base matrix: raw features minus text/datetime and
+        # identity-like high-cardinality columns (kept out so they aren't label-
+        # encoded into per-row identifiers), plus immediate-created columns.
+        # Deferred ops are applied in Phase 5b.
+        exclude_raw = (
+            set(state.eda_summary.text_cols)
+            | set(state.eda_summary.datetime_cols)
+            | identity_cols
+        )
+        model_cols = [c for c in base_feature_cols if c not in exclude_raw]
         model_cols += [c for c in immediate_created if c not in model_cols]
         model_cols = list(dict.fromkeys(model_cols))
 
@@ -496,10 +509,19 @@ class Orchestrator:
             "You are a Kaggle feature engineer. Given the column schema and the "
             "allowed operation registry, return a JSON array of operations. Each "
             "operation has keys: operation, columns (list), output_name, rationale, "
-            "and optional params. Only use operations from the registry."
+            "and optional params. Only use operations from the registry.\n"
+            "IMPORTANT — identity-like high-cardinality columns (names, ticket ids, "
+            "cabin/serial codes; listed under identity_columns) have near-unique "
+            "values that DO NOT generalize to the disjoint test set. Never apply "
+            "tfidf_svd to them (it is rejected). Instead extract generalizing signal: "
+            "extract_title for a name column; family_size and is_alone from "
+            "sibling/spouse + parent/child counts; cabin_deck for a cabin code; "
+            "count_encoding to turn a shared id into a group size."
         )
         schema = {
             "columns": feature_cols,
+            "identity_columns": state.eda_summary.high_cardinality_cols
+            if state.eda_summary else [],
             "registry": list(fe_tools.REGISTRY.keys()),
             "is_time_series": state.is_time_series,
             "eda_directions": state.eda_analysis.fe_directions if state.eda_analysis else [],

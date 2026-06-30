@@ -20,6 +20,17 @@ from agent.memory import FEOperation
 
 DEFERRED_OPS = {"target_encode", "group_mean_encode", "group_std_encode"}
 TIME_SERIES_OPS = {"lag", "rolling_mean"}
+# Ops that overfit when pointed at an identity-like high-cardinality column
+# (e.g. TF-IDF/SVD on Name or Ticket): tokens are near-unique, so the model
+# memorizes rows that don't recur in a disjoint test set. Skipped in Phase 3.
+IDENTITY_UNSAFE_OPS = {"tfidf_svd"}
+
+
+def is_identity_unsafe(op: FEOperation, identity_cols: set[str]) -> bool:
+    """True when `op` would overfit by operating on an identity-like column."""
+    return op.operation in IDENTITY_UNSAFE_OPS and any(
+        c in identity_cols for c in op.columns
+    )
 
 # operation -> required number of input columns.
 REGISTRY: dict[str, int] = {
@@ -38,6 +49,12 @@ REGISTRY: dict[str, int] = {
     "lag": 1,
     "rolling_mean": 1,
     "count_encoding": 1,
+    # Semantic extractors — low-cardinality, generalizing features pulled from
+    # identity-like columns instead of TF-IDF/label-encoding the raw values.
+    "extract_title": 1,      # honorific from a name column (Mr/Mrs/Miss/Rare)
+    "family_size": 2,        # sib/spouse + parent/child counts + 1
+    "is_alone": 2,           # 1 when family_size == 1
+    "cabin_deck": 1,         # leading deck letter of a cabin code
 }
 
 
@@ -143,6 +160,27 @@ def execute_immediate(
     elif op.operation == "datetime_parts":
         created = _datetime_parts(train, test, cols[0], name)
 
+    elif op.operation == "extract_title":
+        created = _extract_title(train, test, cols[0], name, op.params)
+
+    elif op.operation == "family_size":
+        put(train, name, _family_size(train, cols))
+        if test is not None and all(c in test for c in cols):
+            put(test, name, _family_size(test, cols))
+        created = [name]
+
+    elif op.operation == "is_alone":
+        put(train, name, (_family_size(train, cols) == 1).astype(int))
+        if test is not None and all(c in test for c in cols):
+            put(test, name, (_family_size(test, cols) == 1).astype(int))
+        created = [name]
+
+    elif op.operation == "cabin_deck":
+        put(train, name, _cabin_deck(train[cols[0]]))
+        if test is not None and cols[0] in test:
+            put(test, name, _cabin_deck(test[cols[0]]))
+        created = [name]
+
     elif op.operation == "tfidf_svd":
         created = _tfidf_svd(train, test, cols[0], name, op.params)
 
@@ -203,6 +241,38 @@ def _tfidf_svd(
         te_svd = svd.transform(vec.transform(test[col].fillna("").astype(str)))
         test[names] = te_svd
     return names
+
+
+def _extract_title(
+    train: pd.DataFrame, test: pd.DataFrame | None, col: str, prefix: str, params: dict
+) -> list[str]:
+    """Pull the honorific (e.g. 'Mr', 'Miss') from a name column. Titles seen
+    fewer than `min_count` times in train collapse to 'Rare'; unseen test titles
+    map to 'Rare' too. Fit on train only."""
+    min_count = int(params.get("min_count", 10))
+    pat = r" ([A-Za-z]+)\."
+
+    def titles(frame: pd.DataFrame) -> pd.Series:
+        return frame[col].astype(str).str.extract(pat, expand=False)
+
+    tr_titles = titles(train)
+    counts = tr_titles.value_counts()
+    common = set(counts[counts >= min_count].index)
+    train[prefix] = tr_titles.where(tr_titles.isin(common), "Rare").fillna("Rare")
+    if test is not None and col in test:
+        te_titles = titles(test)
+        test[prefix] = te_titles.where(te_titles.isin(common), "Rare").fillna("Rare")
+    return [prefix]
+
+
+def _family_size(frame: pd.DataFrame, cols: list[str]) -> pd.Series:
+    """Total household size: sib/spouse + parent/child counts + the passenger."""
+    return frame[cols[0]].fillna(0) + frame[cols[1]].fillna(0) + 1
+
+
+def _cabin_deck(series: pd.Series) -> pd.Series:
+    """Leading deck letter of a cabin code; missing cabins map to 'U'."""
+    return series.map(lambda v: str(v)[0] if pd.notna(v) and str(v) else "U")
 
 
 # ----------------------------------------------------------------- deferred ops

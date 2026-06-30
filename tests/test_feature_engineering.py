@@ -22,7 +22,7 @@ from tests.conftest import FakeAnthropic, FakeKaggleApi
 def test_all_registry_ops_have_arity():
     # Every registry op must declare a positive required-column count.
     assert all(n >= 1 for n in fe.REGISTRY.values())
-    assert len(fe.REGISTRY) == 15
+    assert len(fe.REGISTRY) == 19
 
 
 def test_validate_unknown_operation():
@@ -95,6 +95,10 @@ def test_all_immediate_registry_ops_callable():
         "cat": rng.choice(["x", "y", "z"], n),
         "txt": ["hello world foo bar " * 2] * n,
         "d": pd.date_range("2021-01-01", periods=n, freq="D"),
+        "name": [f"Foo{i}, Mr. Bar" for i in range(n)],
+        "sib": rng.integers(0, 3, n),
+        "par": rng.integers(0, 3, n),
+        "cabin": rng.choice(["C85", "E46", None], n),
     })
     specs = {
         "log_transform": (["a"], {}),
@@ -109,12 +113,63 @@ def test_all_immediate_registry_ops_callable():
         "datetime_parts": (["d"], {}),
         "lag": (["a"], {"periods": 1}),
         "rolling_mean": (["a"], {"window": 3}),
+        "extract_title": (["name"], {"min_count": 1}),
+        "family_size": (["sib", "par"], {}),
+        "is_alone": (["sib", "par"], {}),
+        "cabin_deck": (["cabin"], {}),
     }
+    # Every immediate (non-deferred) registry op must have a runnable spec here.
+    immediate_ops = set(fe.REGISTRY) - fe.DEFERRED_OPS
+    assert immediate_ops == set(specs), f"missing specs for {immediate_ops - set(specs)}"
     for opname, (cols, params) in specs.items():
         op = FEOperation(operation=opname, columns=cols, output_name=f"{opname}_out",
                          params=params)
         created = fe.execute_immediate(train.copy(), None, op)
         assert created, f"{opname} produced no columns"
+
+
+def test_extract_title_collapses_rare_and_handles_unseen():
+    train = pd.DataFrame({"Name": [
+        "Braund, Mr. Owen", "Allen, Mr. William",       # Mr x2
+        "Cumings, Mrs. John", "Futrelle, Mrs. Jacques",  # Mrs x2
+        "Heikkinen, Miss. Laina", "McGowan, Miss. Anna",  # Miss x2
+        "Moran, Dr. James",                              # Dr x1 (rare)
+    ]})
+    test = pd.DataFrame({"Name": ["Future, Countess. X", "Smith, Mr. Bob"]})
+    op = FEOperation(operation="extract_title", columns=["Name"], output_name="Title",
+                     params={"min_count": 2})
+    created = fe.execute_immediate(train, test, op)
+    assert created == ["Title"]
+    assert set(train["Title"]) == {"Mr", "Mrs", "Miss", "Rare"}  # Dr -> Rare
+    # Unseen test title (Countess) collapses to Rare; known Mr passes through.
+    assert list(test["Title"]) == ["Rare", "Mr"]
+
+
+def test_family_size_and_is_alone():
+    train = pd.DataFrame({"SibSp": [0, 1, 3], "Parch": [0, 2, 0]})
+    fs = FEOperation(operation="family_size", columns=["SibSp", "Parch"], output_name="FS")
+    ia = FEOperation(operation="is_alone", columns=["SibSp", "Parch"], output_name="IA")
+    fe.execute_immediate(train, None, fs)
+    fe.execute_immediate(train, None, ia)
+    assert list(train["FS"]) == [1, 4, 4]
+    assert list(train["IA"]) == [1, 0, 0]
+
+
+def test_cabin_deck_extracts_letter_and_marks_missing():
+    train = pd.DataFrame({"Cabin": ["C85", "E46", None, "B28"]})
+    op = FEOperation(operation="cabin_deck", columns=["Cabin"], output_name="Deck")
+    fe.execute_immediate(train, None, op)
+    assert list(train["Deck"]) == ["C", "E", "U", "B"]
+
+
+def test_is_identity_unsafe_blocks_tfidf_on_identity_cols():
+    tfidf_name = FEOperation(operation="tfidf_svd", columns=["Name"], output_name="x")
+    tfidf_text = FEOperation(operation="tfidf_svd", columns=["Review"], output_name="x")
+    count_name = FEOperation(operation="count_encoding", columns=["Ticket"], output_name="x")
+    identity = {"Name", "Ticket"}
+    assert fe.is_identity_unsafe(tfidf_name, identity) is True
+    assert fe.is_identity_unsafe(tfidf_text, identity) is False   # genuine text is fine
+    assert fe.is_identity_unsafe(count_name, identity) is False   # count_encoding allowed
 
 
 def test_tfidf_svd_adds_matching_train_and_test_columns():

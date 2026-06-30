@@ -55,6 +55,22 @@ def test_classify_columns():
     assert "dt" in types["datetime"]
 
 
+def test_classify_columns_flags_high_cardinality_identity():
+    n = 50
+    df = pd.DataFrame({
+        "ticket": [f"T{i}" for i in range(n)],          # all unique -> identity
+        "name": [f"Person {i}, Mr. X" for i in range(n)],  # all unique -> identity
+        "sex": (["m", "f"] * n)[:n],                     # low-cardinality categorical
+    })
+    types = eda_tools.classify_columns(df)
+    assert "ticket" in types["high_cardinality"]
+    assert "name" in types["high_cardinality"]
+    assert "sex" in types["categorical"]
+    # Identity columns must NOT leak into the ordinary categorical bucket.
+    assert "ticket" not in types["categorical"]
+    assert "name" not in types["categorical"]
+
+
 # ----------------------------------------------------------------- time series
 def test_time_series_by_hint():
     df = pd.DataFrame({"x": [1, 2, 3]})

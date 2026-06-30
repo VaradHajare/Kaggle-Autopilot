@@ -43,6 +43,7 @@ class EDASummary(BaseModel):
     datetime_cols: list[str] = Field(default_factory=list)
     text_cols: list[str] = Field(default_factory=list)
     boolean_cols: list[str] = Field(default_factory=list)
+    high_cardinality_cols: list[str] = Field(default_factory=list)
     high_missing_cols: list[str] = Field(default_factory=list)
     duplicate_rows: int = 0
     leakage_flags: list[str] = Field(default_factory=list)

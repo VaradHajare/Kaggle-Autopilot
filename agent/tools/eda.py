@@ -32,6 +32,12 @@ _TIME_NAME_RE = re.compile(r"\b(date|timestamp|week|month|year)\b", re.IGNORECAS
 HIGH_MISSING_THRESHOLD = 0.30
 HIGH_CORR_LEAK_THRESHOLD = 0.99
 TEXT_AVG_LEN = 30  # avg string length above which an object column is "text"
+# An object column with many near-unique short values (e.g. Name, Ticket, Cabin)
+# is identity-like: label-encoding or TF-IDF on it overfits to specific rows and
+# does not generalize to a disjoint test set. Bucketed separately and kept out of
+# the raw feature matrix; semantic ops (titles, group size) extract real signal.
+HIGH_CARD_MIN_UNIQUE = 20    # at least this many distinct values
+HIGH_CARD_UNIQUE_RATIO = 0.5  # and unique/non-null ratio above this
 
 
 def load_table(path: Path, *, nrows: int | None = None) -> pd.DataFrame:
@@ -74,9 +80,20 @@ def identify_target_columns(
     return sample_cols[0], sample_cols[1:]
 
 
+def _is_high_cardinality(s: pd.Series) -> bool:
+    """True for identity-like object columns: many distinct, near-unique values."""
+    non_null = s.dropna()
+    if non_null.empty:
+        return False
+    nun = non_null.nunique()
+    return nun >= HIGH_CARD_MIN_UNIQUE and (nun / len(non_null)) > HIGH_CARD_UNIQUE_RATIO
+
+
 def classify_columns(df: pd.DataFrame) -> dict[str, list[str]]:
-    """Bucket columns into numeric / categorical / datetime / text / boolean."""
-    numeric, categorical, datetime_c, text, boolean = [], [], [], [], []
+    """Bucket columns into numeric / categorical / datetime / text / boolean /
+    high_cardinality. High-cardinality identity-like object columns are split out
+    so the pipeline keeps them out of the raw (label-encoded) feature matrix."""
+    numeric, categorical, datetime_c, text, boolean, high_card = [], [], [], [], [], []
     for col in df.columns:
         s = df[col]
         if pd.api.types.is_bool_dtype(s):
@@ -90,10 +107,13 @@ def classify_columns(df: pd.DataFrame) -> dict[str, list[str]]:
             else:
                 numeric.append(col)
         else:
-            # object/category: text if long strings, else categorical.
+            # object/category: text if long strings; identity-like if near-unique;
+            # otherwise an ordinary low-cardinality categorical.
             avg_len = s.dropna().astype(str).str.len().mean() if s.notna().any() else 0
             if avg_len and avg_len > TEXT_AVG_LEN:
                 text.append(col)
+            elif _is_high_cardinality(s):
+                high_card.append(col)
             else:
                 categorical.append(col)
     return {
@@ -102,6 +122,7 @@ def classify_columns(df: pd.DataFrame) -> dict[str, list[str]]:
         "datetime": datetime_c,
         "text": text,
         "boolean": boolean,
+        "high_cardinality": high_card,
     }
 
 
@@ -221,6 +242,7 @@ def build_eda_summary(
         datetime_cols=types["datetime"],
         text_cols=types["text"],
         boolean_cols=types["boolean"],
+        high_cardinality_cols=types["high_cardinality"],
         high_missing_cols=high_missing,
         duplicate_rows=int(df.duplicated().sum()),
         leakage_flags=leakage,
