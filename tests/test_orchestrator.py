@@ -4,11 +4,22 @@ from __future__ import annotations
 
 import pytest
 
-from agent.errors import AgentFatalError, BootstrapError, StateVersionMismatchError
+from agent.errors import (
+    AgentFatalError,
+    BootstrapError,
+    LLMQuotaError,
+    StateVersionMismatchError,
+)
 from agent.llm import LLMClient
+from agent.memory import RunState
 from agent.orchestrator import Orchestrator
 from agent.tools.kaggle_api import KaggleClient
-from tests.conftest import FakeAnthropic, FakeKaggleApi
+from tests.conftest import (
+    ApiStatusError,
+    FakeAnthropic,
+    FakeAnthropicRaising,
+    FakeKaggleApi,
+)
 
 
 def _orch(tmp_path, settings, config, *, kaggle_api=None, anthropic_text='{"ok": true}'):
@@ -112,3 +123,39 @@ def test_resume_version_mismatch_raises(tmp_path, settings, config):
     p.write_text(p.read_text().replace('"1.1"', '"0.9"'), encoding="utf-8")
     with pytest.raises(StateVersionMismatchError):
         orch.bootstrap("demo-comp", resume=True)
+
+
+def test_resume_validates_llm_credentials(tmp_path, settings, config):
+    # A run exists on disk, but the LLM key is now invalid. Resume must fail
+    # loud at bootstrap rather than deep inside a later phase.
+    _orch(tmp_path, settings, config).bootstrap("demo-comp")
+
+    bad_llm = LLMClient(
+        api_key="t", client=FakeAnthropicRaising(ApiStatusError("invalid x-api-key", 401))
+    )
+    broken = Orchestrator(
+        settings=settings, config=config,
+        kaggle=KaggleClient(api=FakeKaggleApi()), llm=bad_llm,
+        runs_root=tmp_path / "runs",
+    )
+    with pytest.raises(AgentFatalError):
+        broken.bootstrap("demo-comp", resume=True)
+
+
+def test_record_fatal_persists_to_state_and_log(tmp_path, settings, config):
+    orch = _orch(tmp_path, settings, config)
+    state = orch.bootstrap("demo-comp")
+
+    orch._record_fatal(state, "2", LLMQuotaError("quota gone", remediation="wait"))
+
+    assert len(state.errors) == 1
+    rec = state.errors[0]
+    assert rec.phase == "2"
+    assert rec.error_type == "LLMQuotaError"
+    assert rec.recovery_action == "wait"
+
+    # Persisted to disk and surfaced in run_log.md.
+    reloaded = RunState.load(state.run_dir)
+    assert reloaded.errors[0].message == "quota gone"
+    log_text = (state.run_dir / "run_log.md").read_text(encoding="utf-8")
+    assert "FATAL" in log_text and "wait" in log_text

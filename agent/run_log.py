@@ -71,7 +71,7 @@ class RunLog:
             out += [f"- {e}" for e in errors]
         self._append("\n".join(out) + "\n")
         logger.log(
-            "ERROR" if status == "ERROR" else "INFO",
+            "ERROR" if status in ("ERROR", "FATAL") else "INFO",
             "[PHASE {}] {} — {}",
             number,
             name,

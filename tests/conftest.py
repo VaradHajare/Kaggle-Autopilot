@@ -94,6 +94,34 @@ class FakeAnthropic:
         self.messages = FakeMessages(text)
 
 
+class ApiStatusError(Exception):
+    """Mimics a provider SDK error carrying an HTTP status code."""
+
+    def __init__(self, message: str, status_code: int) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _RaisingMessages:
+    """messages.create that records every call and always raises `exc`."""
+
+    def __init__(self, exc: Exception, calls: list) -> None:
+        self._exc = exc
+        self.calls = calls
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        raise self._exc
+
+
+class FakeAnthropicRaising:
+    """Anthropic stand-in whose every request raises a given exception."""
+
+    def __init__(self, exc: Exception) -> None:
+        self.calls: list = []
+        self.messages = _RaisingMessages(exc, self.calls)
+
+
 class FakeGeminiModels:
     def __init__(self, text='{"ok": true}'):
         self._text = text

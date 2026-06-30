@@ -21,6 +21,7 @@ from agent.config import AgentConfig, Settings, load_model_search_spaces
 from agent.errors import AgentFatalError, BootstrapError
 from agent.llm import BaseLLM, build_llm
 from agent.memory import (
+    AgentErrorRecord,
     CompetitionMeta,
     EnsembleStrategy,
     FEOperation,
@@ -85,6 +86,32 @@ class Orchestrator:
         self.llm = llm or build_llm(settings)
         self.runs_root = Path(runs_root)
 
+    def _validate_runtime_credentials(self) -> None:
+        """Kaggle + active-LLM auth checks. Run on both fresh start and resume so
+        a missing/invalid key fails loud at bootstrap, not mid-pipeline."""
+        if not (self.settings.kaggle_username and self.settings.kaggle_key):
+            raise AgentFatalError(
+                "Kaggle credentials missing.",
+                remediation="Set KAGGLE_USERNAME and KAGGLE_KEY in .env.",
+            )
+        if not self.kaggle.check_credentials():
+            raise AgentFatalError(
+                "Kaggle API authentication failed.",
+                remediation="Verify KAGGLE_USERNAME / KAGGLE_KEY are correct.",
+            )
+
+        provider = self.settings.llm_provider
+        if not self.settings.llm_api_key:
+            raise AgentFatalError(
+                f"{provider} API key missing.",
+                remediation=f"Set {self.settings.llm_key_env} in .env.",
+            )
+        if not self.llm.check_credentials():
+            raise AgentFatalError(
+                f"{provider} API authentication failed.",
+                remediation=f"Verify {self.settings.llm_key_env} is valid.",
+            )
+
     # ------------------------------------------------------------------ Phase 0
     def bootstrap(
         self,
@@ -113,6 +140,9 @@ class Orchestrator:
                 shutil.rmtree(run_dir)
             elif resume:
                 state = RunState.load(run_dir)  # raises on version mismatch
+                # Validate credentials on resume too — otherwise a bad/expired
+                # LLM or Kaggle key only surfaces deep in a later phase.
+                self._validate_runtime_credentials()
                 logger.info("Resuming {} from phase {}", slug, state.last_completed_phase)
                 return state
             else:
@@ -122,30 +152,8 @@ class Orchestrator:
                     remediation="Re-run with --resume or --force-restart.",
                 )
 
-        # 3. Kaggle credentials.
-        if not (self.settings.kaggle_username and self.settings.kaggle_key):
-            raise AgentFatalError(
-                "Kaggle credentials missing.",
-                remediation="Set KAGGLE_USERNAME and KAGGLE_KEY in .env.",
-            )
-        if not self.kaggle.check_credentials():
-            raise AgentFatalError(
-                "Kaggle API authentication failed.",
-                remediation="Verify KAGGLE_USERNAME / KAGGLE_KEY are correct.",
-            )
-
-        # 4. LLM provider key.
-        provider = self.settings.llm_provider
-        if not self.settings.llm_api_key:
-            raise AgentFatalError(
-                f"{provider} API key missing.",
-                remediation=f"Set {self.settings.llm_key_env} in .env.",
-            )
-        if not self.llm.check_credentials():
-            raise AgentFatalError(
-                f"{provider} API authentication failed.",
-                remediation=f"Verify {self.settings.llm_key_env} is valid.",
-            )
+        # 3 + 4. Kaggle + LLM credentials (shared with the resume path).
+        self._validate_runtime_credentials()
 
         # 5. Rules acceptance — mandatory before any data operation.
         if not self.kaggle.check_rules_accepted(slug):
@@ -227,7 +235,11 @@ class Orchestrator:
 
         while True:
             for _id, fn in sequence[start:]:
-                fn(state)
+                try:
+                    fn(state)
+                except AgentFatalError as exc:
+                    self._record_fatal(state, _id, exc)
+                    raise
             reentry = self.plan_iteration(state)
             if reentry is None:
                 break
@@ -249,6 +261,30 @@ class Orchestrator:
             if order.index(pid) >= next_pos:
                 return i
         return len(sequence)  # everything done
+
+    def _record_fatal(self, state: RunState, phase_id: str, exc: AgentFatalError) -> None:
+        """Append a fatal phase failure to RunState.errors, persist, and log it
+        before the exception propagates to the CLI. Keeps fatal runs auditable
+        from state.json / run_log.md instead of a bare traceback."""
+        state.errors.append(
+            AgentErrorRecord(
+                timestamp=datetime.now(timezone.utc),
+                phase=phase_id,
+                error_type=type(exc).__name__,
+                message=str(exc),
+                recovery_action=exc.remediation or "",
+            )
+        )
+        try:
+            state.save()
+        except Exception:  # noqa: BLE001 — never mask the original failure
+            logger.error("Failed to persist state after fatal error in phase {}", phase_id)
+        entry = [str(exc)]
+        if exc.remediation:
+            entry.append(f"remediation: {exc.remediation}")
+        RunLog(state.run_dir).phase(
+            phase_id, f"Phase {phase_id}", status="FATAL", errors=entry,
+        )
 
     # ------------------------------------------------------------------ Phase 1
     def ingest(self, state: RunState) -> RunState:

@@ -15,15 +15,63 @@ The underlying SDK client is injectable so tests run without a key.
 from __future__ import annotations
 
 import json
+import time
+from collections.abc import Callable
 from typing import Any
 
 from loguru import logger
+
+from agent.errors import AgentFatalError, LLMAuthError, LLMQuotaError
+from agent.retry import with_retries
 
 JSON_SUFFIX = (
     "You must respond ONLY with valid JSON. No preamble, no markdown fences, "
     'no explanation. If you cannot produce valid JSON, respond with '
     '{"error": "<reason>"}.'
 )
+
+_AUTH_MARKERS = (
+    "authentication", "invalid x-api-key", "invalid api key",
+    "api key not valid", "unauthorized", "permission_denied", "permission denied",
+)
+_QUOTA_MARKERS = (
+    "resource_exhausted", "rate limit", "ratelimit",
+    "quota", "too many requests",
+)
+
+
+def classify_llm_error(
+    exc: Exception, *, provider: str, key_env: str
+) -> AgentFatalError | None:
+    """Map a provider SDK exception to a fatal AgentError, or None if unrecognized.
+
+    Classification prefers the exception's HTTP status code (401 -> auth,
+    429 -> quota) and falls back to well-known phrase markers in the message so
+    it works across the Gemini and Anthropic SDKs without importing their
+    private error types.
+    """
+    status = getattr(exc, "status_code", None)
+    if status is None:
+        status = getattr(exc, "code", None)
+    text = str(exc).lower()
+
+    is_auth = status == 401 or any(m in text for m in _AUTH_MARKERS)
+    is_quota = status == 429 or any(m in text for m in _QUOTA_MARKERS)
+
+    if is_auth:
+        return LLMAuthError(
+            f"{provider} API authentication failed.",
+            remediation=f"Verify {key_env} in .env is a valid, active key.",
+        )
+    if is_quota:
+        return LLMQuotaError(
+            f"{provider} API quota or rate limit exhausted.",
+            remediation=(
+                f"Wait for the {provider} quota to reset, raise the tier, or set "
+                "LLM_PROVIDER to the other backend in .env."
+            ),
+        )
+    return None
 
 
 class LLMResult:
@@ -50,11 +98,52 @@ def _strip_fences(text: str) -> str:
 class BaseLLM:
     """Shared JSON-call orchestration. Subclasses implement `_raw_call`."""
 
-    def __init__(self, *, model: str, max_tokens: int) -> None:
+    def __init__(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        provider: str = "llm",
+        key_env: str = "LLM_API_KEY",
+        sleep: Callable[[float], None] = time.sleep,
+    ) -> None:
         self.model = model
         self.max_tokens = max_tokens
+        self.provider = provider
+        self.key_env = key_env
+        self._sleep = sleep
         self.total_tokens_in = 0
         self.total_tokens_out = 0
+
+    def _guarded_raw_call(
+        self, *, system: str, user: str, max_tokens: int
+    ) -> tuple[str, int, int]:
+        """`_raw_call` with provider-error classification and bounded retry.
+
+        Auth failures raise immediately (no point retrying a bad key); quota /
+        rate / transient failures retry with backoff, then surface as a
+        classified fatal error. Both are subclasses of AgentFatalError, so the
+        CLI prints remediation and exits 1 instead of dumping a traceback.
+        """
+        def attempt() -> tuple[str, int, int]:
+            try:
+                return self._raw_call(system=system, user=user, max_tokens=max_tokens)
+            except (LLMAuthError, LLMQuotaError):
+                raise
+            except Exception as exc:  # noqa: BLE001
+                fatal = classify_llm_error(
+                    exc, provider=self.provider, key_env=self.key_env
+                )
+                if fatal is not None:
+                    raise fatal from exc
+                raise
+
+        return with_retries(
+            attempt,
+            sleep=self._sleep,
+            label=f"{self.provider} LLM call",
+            retry_on=lambda exc: not isinstance(exc, LLMAuthError),
+        )
 
     def call_json(
         self,
@@ -72,7 +161,7 @@ class BaseLLM:
         last_text = ""
         t_in = t_out = 0
         for i, prompt in enumerate(attempts):
-            text, ti, to = self._raw_call(
+            text, ti, to = self._guarded_raw_call(
                 system=full_system, user=prompt, max_tokens=max_tokens or self.max_tokens
             )
             t_in += ti
@@ -103,8 +192,12 @@ class GeminiLLM(BaseLLM):
         model: str = "gemini-2.0-flash",
         max_tokens: int = 8192,
         client: Any | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        super().__init__(model=model, max_tokens=max_tokens)
+        super().__init__(
+            model=model, max_tokens=max_tokens,
+            provider="gemini", key_env="GEMINI_API_KEY", sleep=sleep,
+        )
         self._client = client
         self._api_key = api_key
 
@@ -152,8 +245,12 @@ class LLMClient(BaseLLM):
         model: str = "claude-sonnet-4-6",
         max_tokens: int = 8192,
         client: Any | None = None,
+        sleep: Callable[[float], None] = time.sleep,
     ) -> None:
-        super().__init__(model=model, max_tokens=max_tokens)
+        super().__init__(
+            model=model, max_tokens=max_tokens,
+            provider="anthropic", key_env="ANTHROPIC_API_KEY", sleep=sleep,
+        )
         self._client = client
         self._api_key = api_key
 

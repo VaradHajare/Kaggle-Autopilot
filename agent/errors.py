@@ -34,6 +34,21 @@ class StateVersionMismatchError(AgentFatalError):
     """
 
 
+class LLMAuthError(AgentFatalError):
+    """LLM provider rejected the credentials (e.g. 401 / invalid API key).
+
+    Fatal: every phase past ingestion needs the LLM, so there is nothing to
+    recover to. Never retried.
+    """
+
+
+class LLMQuotaError(AgentFatalError):
+    """LLM provider quota or rate limit exhausted (e.g. 429) and retries failed.
+
+    Fatal once backoff is exhausted — the run cannot make further LLM calls.
+    """
+
+
 class DeferredOpError(AgentError):
     """A deferred in-fold FE operation (target/group encoding) was invoked
     outside the CV fold context. These operations must never be fit on the
