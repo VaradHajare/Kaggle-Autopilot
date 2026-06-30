@@ -196,12 +196,12 @@ def _tfidf_svd(
     svd = TruncatedSVD(n_components=n_comp, random_state=42)
     tr_svd = svd.fit_transform(tfidf)
     names = [f"{prefix}_{i}" for i in range(n_comp)]
-    for i, n in enumerate(names):
-        train[n] = tr_svd[:, i]
+    # Assign all SVD columns in one block — column-by-column insertion fragments
+    # the frame and triggers pandas PerformanceWarning.
+    train[names] = tr_svd
     if test is not None and col in test:
         te_svd = svd.transform(vec.transform(test[col].fillna("").astype(str)))
-        for i, n in enumerate(names):
-            test[n] = te_svd[:, i]
+        test[names] = te_svd
     return names
 
 

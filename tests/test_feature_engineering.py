@@ -117,6 +117,24 @@ def test_all_immediate_registry_ops_callable():
         assert created, f"{opname} produced no columns"
 
 
+def test_tfidf_svd_adds_matching_train_and_test_columns():
+    train = pd.DataFrame({"txt": ["hello world foo", "bar baz qux", "foo bar hello"]})
+    test = pd.DataFrame({"txt": ["hello bar", "qux foo"]})
+    op = FEOperation(
+        operation="tfidf_svd", columns=["txt"], output_name="txt_svd",
+        params={"components": 2, "max_features": 10},
+    )
+    created = fe.execute_immediate(train, test, op)
+
+    assert created  # at least one SVD component column
+    # Both frames gained exactly the created columns, with the right row counts.
+    for name in created:
+        assert name in train.columns and name in test.columns
+    assert len(train) == 3 and len(test) == 2
+    assert train[created].notna().all().all()
+    assert test[created].notna().all().all()
+
+
 def test_group_std_encode_infold():
     fit_X = pd.DataFrame({"g": ["x", "x", "x", "y"], "v": [10.0, 20.0, 30.0, 5.0]})
     fit_y = pd.Series([0, 0, 0, 0])
