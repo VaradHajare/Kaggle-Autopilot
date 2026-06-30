@@ -66,8 +66,8 @@ your CV score) as auditable, deterministic Python.
 ## Install
 
 ```bash
-uv sync                # full stack (ML libs are heavy)
-cp .env.example .env   # then fill in credentials
+uv sync               
+cp .env.example .env   
 ```
 
 Required credentials in `.env`:
@@ -84,17 +84,17 @@ Never commit `.env`.
 ## Usage
 
 ```bash
-# Full pipeline (no auto-submit by default; generates a submission file only)
+# Full pipeline 
 python -m agent run "https://www.kaggle.com/competitions/<slug>"
 
 # Enable automatic submission to Kaggle
 python -m agent run <url> --submit
 
-# Resume from the last checkpoint / discard stale state
+# Resume from the last checkpoint/discard state
 python -m agent resume <slug>
 python -m agent run <url> --force-restart
 
-# Limit iterations, raise log verbosity
+# Limit number of iterations
 python -m agent run <url> --submit --max-iterations 1 --log-level DEBUG
 ```
 
