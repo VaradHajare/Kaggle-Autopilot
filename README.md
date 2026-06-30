@@ -24,7 +24,7 @@ ranking, ensemble choice), while the deterministic mechanics (cross-validation,
 encoding, validation, post-processing) are plain, tested code. The LLM provider is
 pluggable (`LLM_PROVIDER`): Google Gemini by default, Anthropic Claude optional.
 
-> **Philosophy.** Squeeze the most leaderboard score out of a fixed compute and
+> **Philosophy:** Squeeze the most leaderboard score out of a fixed compute and
 > submission budget. Reach for proven methods before clever ones. And guard the
 > validation signal above all else: an inflated CV score from a leaky pipeline is
 > worth less than an honest, lower one.
