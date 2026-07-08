@@ -64,3 +64,25 @@ def test_best_submission_picks_highest_cv(tmp_path):
 
 def test_best_submission_none_when_empty(tmp_path):
     assert _state(tmp_path).best_submission is None
+
+
+def test_best_submission_respects_minimize_metric(tmp_path):
+    """For minimize metrics (RMSE/logloss) the LOWEST CV score is best — the
+    opposite of the default. Guards against submitting the worst file."""
+    state = _state(tmp_path)
+    state.metric_higher_is_better = False
+    now = datetime.now(timezone.utc)
+    state.submission_paths = [
+        SubmissionRecord(path=Path("hi.csv"), cv_score=0.90, timestamp=now),
+        SubmissionRecord(path=Path("lo.csv"), cv_score=0.40, timestamp=now),
+    ]
+    assert state.best_submission.cv_score == 0.40
+    assert state.best_submission.path == Path("lo.csv")
+
+
+def test_best_submission_direction_survives_roundtrip(tmp_path):
+    """metric_higher_is_better must persist so a resumed run selects correctly."""
+    state = _state(tmp_path)
+    state.metric_higher_is_better = False
+    state.save()
+    assert RunState.load(state.run_dir).metric_higher_is_better is False

@@ -186,6 +186,23 @@ def make_cv(task_kind: str, is_time_series: bool, n_splits: int, seed: int):
     return KFold(n_splits=n_splits, shuffle=True, random_state=seed)
 
 
+def covered_mask(cv, y) -> np.ndarray:
+    """Boolean mask of rows that land in some validation fold.
+
+    All True for k-fold (every row is validated exactly once). For
+    TimeSeriesSplit the initial block is never in any validation fold, so those
+    OOF predictions stay at their init value (undefined) and must be excluded
+    from scoring and blending — otherwise the metric is computed over rows the
+    models never predicted. Fold assignment depends only on the sample count and
+    (for stratification) y, so a placeholder X reproduces the training splits.
+    """
+    n = len(y)
+    mask = np.zeros(n, dtype=bool)
+    for _, va_idx in cv.split(np.empty((n, 1)), y):
+        mask[va_idx] = True
+    return mask
+
+
 def _predict(est, X: pd.DataFrame, task_kind: str) -> np.ndarray:
     if task_kind == "regression":
         return np.asarray(est.predict(X))
@@ -237,10 +254,11 @@ def train_model(
     models_dir.mkdir(parents=True, exist_ok=True)
     direction = "maximize" if metric.higher_is_better else "minimize"
 
-    def run_cv(params: dict) -> tuple[np.ndarray, list]:
+    def run_cv(params: dict) -> tuple[np.ndarray, list, list]:
         oof = (np.zeros(len(y)) if task_kind != "classification"
                else _alloc_oof(y, X, task_kind))
         fold_models = []
+        fold_tr_indices: list[np.ndarray] = []
         for tr_idx, va_idx in cv.split(X, y):
             Xtr = _augment(X.iloc[tr_idx], raw_train.iloc[tr_idx],
                            raw_train.iloc[tr_idx], y.iloc[tr_idx], deferred_ops)
@@ -250,16 +268,21 @@ def train_model(
             est.fit(Xtr, y.iloc[tr_idx])
             oof[va_idx] = _predict(est, Xva, task_kind)
             fold_models.append(est)
-        return oof, fold_models
+            fold_tr_indices.append(tr_idx)
+        return oof, fold_models, fold_tr_indices
 
     # --- Optuna study with early-stopping callback.
+    # Score only rows that were actually validated. For k-fold this is every row;
+    # for TimeSeriesSplit it drops the never-validated initial block.
+    y_np = y.to_numpy()
+    covered = covered_mask(cv, y)
     trial_scores: list[float] = []
     pruned_early = {"flag": False}
 
     def objective(trial: optuna.Trial) -> float:
         params = sample_params(trial, space)
-        oof, _ = run_cv(params)
-        s = metric.score(y.to_numpy(), oof)
+        oof, _, _ = run_cv(params)
+        s = metric.score(y_np[covered], oof[covered])
         trial_scores.append(s)
         return s
 
@@ -280,12 +303,17 @@ def train_model(
 
     best_params = study.best_params
     # --- Refit CV with best params to produce OOF + per-fold models + fold test preds.
-    oof, fold_models = run_cv(best_params)
+    oof, fold_models, fold_tr_indices = run_cv(best_params)
     fold_test_preds: list[np.ndarray] = []
-    for k, est in enumerate(fold_models):
+    for k, (est, tr_idx) in enumerate(zip(fold_models, fold_tr_indices)):
         joblib.dump(est, models_dir / f"{name}_fold{k}.joblib")
         if X_test is not None:
-            Xte = _augment(X_test, raw_test, raw_train, y, deferred_ops)
+            # Encode the test set with THIS fold's training rows only, matching
+            # exactly what the fold model saw at fit time. Using the full-train
+            # encoding here would feed the fold model a distribution it was never
+            # trained on and corrupt the stacking meta-test features.
+            Xte = _augment(X_test, raw_test, raw_train.iloc[tr_idx],
+                           y.iloc[tr_idx], deferred_ops)
             fold_test_preds.append(_predict(est, Xte, task_kind))
     if fold_test_preds:
         # Fold-averaged test predictions — the correct stacking inference input.
@@ -304,7 +332,7 @@ def train_model(
         np.save(models_dir / f"{name}_test.npy", test_pred)
     np.save(models_dir / f"{name}_oof.npy", oof)
 
-    final_score = metric.score(y.to_numpy(), oof)
+    final_score = metric.score(y_np[covered], oof[covered])
     result = CVResult(
         model=name,
         oof_score=final_score,

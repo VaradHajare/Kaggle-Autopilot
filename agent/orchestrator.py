@@ -23,6 +23,7 @@ from agent.llm import BaseLLM, build_llm
 from agent.memory import (
     AgentErrorRecord,
     CompetitionMeta,
+    CVResult,
     EnsembleStrategy,
     FEOperation,
     LeaderboardEntry,
@@ -244,6 +245,12 @@ class Orchestrator:
             if reentry is None:
                 break
             state.iteration += 1
+            # Consume the FE-followup trigger once acted on. Re-entering Phase 3 is
+            # deterministic (temperature-0 FE), so leaving the flag set would re-run
+            # identical work every iteration and permanently starve the higher-
+            # numbered CV-LB (5b) and ensemble (6) re-entry triggers.
+            if reentry == "3" and state.eda_analysis is not None:
+                state.eda_analysis.fe_followups = []
             logger.info("Iteration {} — re-entering at phase {}", state.iteration, reentry)
             start = next(i for i, (pid, _) in enumerate(sequence) if pid == reentry)
         return state
@@ -285,6 +292,23 @@ class Orchestrator:
         RunLog(state.run_dir).phase(
             phase_id, f"Phase {phase_id}", status="FATAL", errors=entry,
         )
+
+    def _record_recoverable(
+        self, state: RunState, phase_id: str, exc: Exception, *, recovery: str
+    ) -> None:
+        """Append a recoverable (skipped-operation) failure to RunState.errors and
+        the run log, then let the phase continue. Unlike _record_fatal this never
+        re-raises — the pipeline proceeds with the remaining work."""
+        state.errors.append(
+            AgentErrorRecord(
+                timestamp=datetime.now(timezone.utc),
+                phase=phase_id,
+                error_type=type(exc).__name__,
+                message=str(exc),
+                recovery_action=recovery,
+            )
+        )
+        logger.warning("Recoverable error in phase {}: {} — {}", phase_id, exc, recovery)
 
     # ------------------------------------------------------------------ Phase 1
     def ingest(self, state: RunState) -> RunState:
@@ -690,6 +714,10 @@ class Orchestrator:
                                  self.config.cv_folds, self.config.cv_seed)
         spaces = load_model_search_spaces()
 
+        # Metric direction is a competition constant — record it so RunState can
+        # pick the best submission correctly for minimize metrics (e.g. RMSE).
+        state.metric_higher_is_better = metric.higher_is_better
+
         results: list = []
         best_prior: float | None = None
         deadline = t0 + self.config.max_training_hours * 3600
@@ -699,13 +727,23 @@ class Orchestrator:
                                 f"Time budget reached; skipping {cand.model} and lower.")
                 break
             space = spaces.get(cand.model, {})
-            artifacts = train_tools.train_model(
-                name=cand.model, space=space, X=X, y=y, raw_train=raw_train,
-                X_test=X_test, raw_test=raw_test, deferred_ops=state.deferred_fe_ops,
-                task_kind=task_kind, metric=metric, cv=cv, models_dir=models_dir,
-                n_trials=self.config.optuna_n_trials, timeout=self.config.optuna_timeout,
-                best_prior_score=best_prior,
-            )
+            # A single model failing (bad hyperparameter combo, estimator-specific
+            # label requirement, OOM, ...) is recoverable: record an ERROR result,
+            # log it, and continue with the other candidates rather than aborting
+            # the whole run.
+            try:
+                artifacts = train_tools.train_model(
+                    name=cand.model, space=space, X=X, y=y, raw_train=raw_train,
+                    X_test=X_test, raw_test=raw_test, deferred_ops=state.deferred_fe_ops,
+                    task_kind=task_kind, metric=metric, cv=cv, models_dir=models_dir,
+                    n_trials=self.config.optuna_n_trials, timeout=self.config.optuna_timeout,
+                    best_prior_score=best_prior,
+                )
+            except Exception as exc:  # noqa: BLE001 — recoverable per-model failure
+                self._record_recoverable(
+                    state, "5b", exc, recovery=f"Skipped model {cand.model}.")
+                results.append(CVResult(model=cand.model, oof_score=0.0, status="ERROR"))
+                continue
             results.append(artifacts.cv_result)
             score = artifacts.cv_result.oof_score
             if best_prior is None or (
@@ -714,12 +752,15 @@ class Orchestrator:
                 best_prior = score
 
         state.cv_results = results
-        ordered = sorted(results, key=lambda r: r.oof_score,
-                         reverse=metric.higher_is_better)
+        ok = [r for r in results if r.status != "ERROR"]
+        ordered = sorted(ok, key=lambda r: r.oof_score, reverse=metric.higher_is_better)
+        errored = [r for r in results if r.status == "ERROR"]
         run_log.phase("5b", "Training & Cross-Validation", status="COMPLETE",
                       duration_s=time.time() - t0,
-                      summary=[f"{r.model}: {r.oof_score:.5f} ({r.status})" for r in ordered],
+                      summary=[f"{r.model}: {r.oof_score:.5f} ({r.status})" for r in ordered]
+                      + [f"{r.model}: FAILED (ERROR)" for r in errored],
                       metrics={"eval_metric": metric.name,
+                               "trained": len(ok), "errored": len(errored),
                                "best": ordered[0].model if ordered else "none"})
         state.last_completed_phase = "5b"
         state.save()
@@ -750,6 +791,16 @@ class Orchestrator:
             test_list.append(np.load(tp) if tp.exists() else None)
             foldtest_list.append(np.load(ftp) if ftp.exists() else None)
 
+        # OOF stacks feed the meta-learner as TRAIN features. For TimeSeriesSplit
+        # the initial rows were never validated (their OOF entries are undefined),
+        # so restrict the blend to validated rows — the same mask used to score the
+        # base models. All-True for k-fold, so this is a no-op there.
+        cv = train_tools.make_cv(task_kind, state.is_time_series,
+                                 self.config.cv_folds, self.config.cv_seed)
+        covered = train_tools.covered_mask(cv, y)
+        y_cov = y[covered]
+        oof_cov = [o[covered] for o in oof_list]
+
         best_idx = ens_tools._best_index(scores, metric.higher_is_better)
         method = self._llm_ensemble_method(state, names, scores)
 
@@ -758,12 +809,12 @@ class Orchestrator:
             method = "none"
 
         used, blended_oof, test_pred = ens_tools.run_ensemble(
-            method, oof_list=oof_list, test_list=test_list, foldtest_list=foldtest_list,
-            scores=scores, y=y, task_kind=task_kind,
+            method, oof_list=oof_cov, test_list=test_list, foldtest_list=foldtest_list,
+            scores=scores, y=y_cov, task_kind=task_kind,
             higher_is_better=metric.higher_is_better,
             seed=self.config.cv_seed, n_splits=self.config.cv_folds,
         )
-        blended_score = metric.score(y, np.asarray(blended_oof))
+        blended_score = metric.score(y_cov, np.asarray(blended_oof))
         if test_pred is None:
             test_pred = test_list[best_idx]
         np.save(models_dir / "ensemble_test.npy", np.asarray(test_pred))
@@ -884,8 +935,11 @@ class Orchestrator:
         if lb_score is not None and abs(delta) > 0.01:
             diagnostics.append(
                 f"CV-LB gap {delta:+.4f} > 0.01 — possible overfitting / CV mismatch.")
+        # The submission uploaded successfully either way; PENDING records that the
+        # public LB score had not posted before the poll window elapsed, so the run
+        # log stays honest instead of claiming a score we never observed.
         run_log.phase("8", "Leaderboard Tracking",
-                      status="COMPLETE" if lb_score is not None else "COMPLETE",
+                      status="COMPLETE" if lb_score is not None else "PENDING",
                       duration_s=time.time() - t0,
                       summary=[f"cv={best.cv_score:.5f}",
                                f"lb={lb_score if lb_score is not None else 'pending'}"],

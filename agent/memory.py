@@ -137,6 +137,9 @@ class RunState(BaseModel):
     selected_models: list[ModelCandidate] = Field(default_factory=list)
     cv_results: list[CVResult] = Field(default_factory=list)
     ensemble_strategy: EnsembleStrategy | None = None
+    # Whether the eval metric is maximized (AUC/accuracy) or minimized (RMSE/logloss).
+    # Set once the metric is resolved in Phase 5b; drives best-submission selection.
+    metric_higher_is_better: bool | None = None
 
     submission_paths: list[SubmissionRecord] = Field(default_factory=list)
 
@@ -149,10 +152,19 @@ class RunState(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @property
     def best_submission(self) -> SubmissionRecord | None:
-        """The submission record with the highest CV score, or None."""
+        """The best submission by CV score, respecting the metric's direction.
+
+        For minimize metrics (RMSE, logloss, MAE) the lowest CV score is best; for
+        maximize metrics (AUC, accuracy) the highest. When the direction is unknown
+        (older state written before it was tracked) defaults to highest, matching
+        the prior behavior."""
         if not self.submission_paths:
             return None
-        return max(self.submission_paths, key=lambda r: r.cv_score)
+        higher_is_better = self.metric_higher_is_better
+        if higher_is_better is None:
+            higher_is_better = True
+        pick = max if higher_is_better else min
+        return pick(self.submission_paths, key=lambda r: r.cv_score)
 
     @property
     def effective_daily_limit(self) -> int:
