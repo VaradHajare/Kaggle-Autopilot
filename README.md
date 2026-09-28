@@ -1,4 +1,4 @@
-# Kaggle Auto Competitor
+# Kaggle Autopilot
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![scikit-learn](https://img.shields.io/badge/scikit--learn-F7931E?logo=scikitlearn&logoColor=white)
@@ -34,7 +34,8 @@ pluggable (`LLM_PROVIDER`): Google Gemini by default, Anthropic Claude optional.
 ## Table of Contents
 
 - [Why this exists](#why-this-exists)
-- [Install](#install)
+- [Results](#results)
+- [Quick start](#quick-start)
 - [Usage](#usage)
 - [System Architecture](#system-architecture)
 - [The Nine-Phase Pipeline](#the-nine-phase-pipeline)
@@ -47,8 +48,10 @@ pluggable (`LLM_PROVIDER`): Google Gemini by default, Anthropic Claude optional.
 - [Configuration reference](#configuration-reference)
 - [Run directory layout](#run-directory-layout)
 - [Error handling model](#error-handling-model)
+- [Known limitations and roadmap](#known-limitations-and-roadmap)
 - [Research references](#research-references)
 - [Development](#development)
+- [License](#license)
 
 ---
 
@@ -63,11 +66,40 @@ your CV score) as auditable, deterministic Python.
 
 ---
 
-## Install
+## Results
+
+The agent is only useful if it beats what a person would do in the same amount of
+time. This section reports how it performs on finished competitions, against
+simple baselines, under a fixed compute budget.
+
+**Method.** Each competition is run end to end with `--submit`, using the default
+config (`cv_folds: 5`, `max_iterations: 3`, `optuna_n_trials: 50`). Scores are the
+public and private leaderboard scores from Kaggle's late-submission feature, and
+"percentile" is the position among final private leaderboard entries. A sample
+`run_log.md` from one run is in [`examples/`](examples/).
+
+| Competition | Task | Metric | Baseline LightGBM (defaults) | AutoGluon (best quality, same time) | Autopilot (heuristics only, no LLM) | Autopilot (LLM decisions) | Private LB percentile |
+|---|---|---|:---:|:---:|:---:|:---:|:---:|
+| TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+
+The two Autopilot columns are an ablation. "Heuristics only" runs the same
+pipeline with every LLM call replaced by its deterministic default, so the
+difference between the two columns is the measured contribution of the LLM
+decisions on that dataset.
+
+Every run also reports CV score, public LB score, and their gap, so you can see
+how honest the validation signal was, not just how high the final score is.
+
+---
+
+## Quick start
 
 ```bash
-uv sync               
-cp .env.example .env   
+uv sync
+cp .env.example .env
 ```
 
 Required credentials in `.env`:
@@ -77,14 +109,15 @@ Required credentials in `.env`:
   `LLM_PROVIDER=anthropic` and provide `ANTHROPIC_API_KEY`.
 - `KAGGLE_USERNAME` and `KAGGLE_KEY`.
 
-Never commit `.env`.
+Never commit `.env`. You also need to accept the competition's rules on Kaggle
+once, in the browser, before the agent can download its data.
 
 ---
 
 ## Usage
 
 ```bash
-# Full pipeline 
+# Full pipeline (does not submit)
 python -m agent run "https://www.kaggle.com/competitions/<slug>"
 
 # Enable automatic submission to Kaggle
@@ -102,6 +135,11 @@ By default the agent **does not submit**. Pass `--submit` (or set
 `auto_submit: true` in `configs/agent.yaml`) to upload. The effective daily
 submission cap is always `min(SUBMISSION_DAILY_LIMIT, the competition's own limit)`.
 
+The bootstrap phase includes a high-stakes guard. Check each competition's rules
+on automated participation before pointing the agent at a live, prize-bearing
+competition. Finished competitions and Playground Series are the intended
+targets.
+
 ---
 
 ## System Architecture
@@ -111,7 +149,7 @@ control flow and all side effects (file writes, logging, network); the `tools/`
 modules are pure functions; `RunState` carries all cross-phase data. Tools never
 import the orchestrator, a hard repository rule that keeps the layering acyclic.
 
-![Architecture of the Kaggle Auto Competitor agent: the command line drives the orchestrator, which runs the eight tool modules, owns and saves RunState, passes a run-state snapshot to the LLM layer, and writes config and the run log. Tools import shared types from RunState.](architecture.png)
+![Architecture of the Kaggle Autopilot agent: the command line drives the orchestrator, which runs the eight tool modules, owns and saves RunState, passes a run-state snapshot to the LLM layer, and writes config and the run log. Tools import shared types from RunState.](architecture.png)
 
 **Dependency direction (never violated):** `orchestrator → tools → memory`.
 Shared types live in `memory.py`. There are no module-level mutable globals and
@@ -220,7 +258,7 @@ flowchart TD
     TRAINM --> PREDICT
     PREDICT --> NEXT{"Any folds left?"}
     NEXT -- yes --> SPLIT
-    NEXT -- no --> OOF["Out-of-fold predictions<br/>(an honest, leakage-free CV score)"]
+    NEXT -- no --> OOF["Out-of-fold predictions<br/>(leakage-free with respect to encodings)"]
 
     style FIT fill:#ffebee,stroke:#c62828,color:#000
     style OOF fill:#e8f5e9,stroke:#2e7d32,color:#000
@@ -235,6 +273,10 @@ with no fold dependence. The full 15-operation registry lives in
 > Tests assert this directly: `target_encode` / `group_mean_encode` /
 > `group_std_encode` **must** raise `DeferredOpError` if invoked outside the CV
 > fold context. See [tests/test_feature_engineering.py](tests/test_feature_engineering.py).
+
+In-fold encoding removes the largest source of leakage, but it is not the only
+one. See [Known limitations and roadmap](#known-limitations-and-roadmap) for the
+remaining ways the reported CV score can be optimistic.
 
 ---
 
@@ -252,7 +294,8 @@ enforced in [agent/tools/ensembler.py](agent/tools/ensembler.py):
   predictions (`<model>_foldtest.npy`), keeping train/test feature distributions
   consistent.
 - The blended OOF score itself is computed via `cross_val_predict` on the OOF
-  stack, so even the reported blend score is leakage-free.
+  stack, so the reported blend score does not reuse rows the meta-learner was
+  fit on.
 - The full-train models are never used for stacking inference.
 
 The other blending strategies (`weighted_average`, a softmax over CV scores;
@@ -276,6 +319,10 @@ The triggers:
   ensemble (Phase 6).
 - The LLM suggested feature follow-ups: add new features (Phase 3).
 
+The thresholds are absolute values, so they mean different things for different
+metrics. Making them relative to fold-to-fold variance is on the
+[roadmap](#known-limitations-and-roadmap).
+
 ---
 
 ## LLM integration
@@ -296,12 +343,17 @@ gracefully":
   (`_state_context`) to keep prompts cheap.
 - **JSON-only output is enforced**, parse failure retries once, then falls back
   to a caller-supplied deterministic default. A bad LLM response can never crash a
-  phase; it degrades to a sensible heuristic.
+  phase; it degrades to a sensible heuristic. Because every decision point has a
+  deterministic default, the whole pipeline can also run with the LLM disabled,
+  which is what the "heuristics only" column in [Results](#results) measures.
 - **Token usage is accumulated** and written into `RunState.total_tokens_used`
   and the run log.
 - **Provider is pluggable** via `build_llm(settings)`: `GeminiLLM` (default) and
   `LLMClient` (Anthropic, `claude-sonnet-4-6`). Both share `call_json`; only the
   raw transport differs, and the SDK client is injectable so tests need no key.
+
+Dataset-derived text (column names, competition descriptions) reaches the prompt,
+so treat it as untrusted input.
 
 ---
 
@@ -395,7 +447,60 @@ crash or a silently-wrong result.
 
 ---
 
+## Known limitations and roadmap
+
+The philosophy is to guard the validation signal, so this section is explicit
+about where the reported CV score can still be optimistic, and about what the
+system does not do yet.
+
+### Validation caveats
+
+- **Tuning and scoring share folds.** Optuna optimizes the same CV folds that
+  produce the reported CV score, which biases that score upward. A repeated or
+  nested scheme, or a final holdout, would give an unbiased estimate.
+- **Feature pruning sees the whole training set.** The importance probe (Phase 5a)
+  uses the target on all training rows before the CV loop starts. The effect is
+  usually small, but it is selection leakage.
+- **Blend selection reuses OOF predictions.** Weights and the stacking
+  meta-learner are chosen on the same OOF predictions the blend is scored on.
+- **The iteration loop uses public leaderboard feedback.** The "LB disagrees with
+  CV" trigger feeds public LB information back into modeling, which invites
+  public-LB overfitting. The small `max_iterations` default limits this but does
+  not remove it.
+- **Grouped and duplicated rows.** Time-series data uses `TimeSeriesSplit`, but
+  there is no grouped splitter (`GroupKFold`) for datasets with repeated entities
+  or near-duplicate rows.
+
+### Roadmap
+
+- [ ] Benchmark table in [Results](#results), including the LLM-vs-heuristics
+  ablation
+- [ ] Keep/discard gate for iterations: accept a change only if CV improves by
+  more than fold-to-fold noise (paired comparison across folds), otherwise revert
+- [ ] Express iteration thresholds relative to fold standard deviation instead of
+  fixed absolute values
+- [ ] Nested or repeated CV for the reported score, and a final holdout check
+- [ ] Fast baseline phase up front, so every later change is measured against a
+  floor
+- [ ] Adversarial validation to detect train/test distribution shift
+- [ ] `GroupKFold` support and duplicate-row detection in EDA
+- [ ] Metric-aware behavior: optimize the competition's actual metric, tune
+  decision thresholds for F1-style metrics
+- [ ] Multi-seed averaging for the final models
+- [ ] Native structured output (JSON schema or tool calling) with Pydantic
+  validation of LLM decisions, replacing prompt-level JSON enforcement
+- [ ] Parallel model training and a wall-clock budget that spans all phases
+- [ ] Docker image and a CI workflow that runs the test suite and coverage gate
+
+Scope is currently tabular competitions (classification and regression). Image,
+text-only, and sequence competitions are out of scope.
+
+---
+
 ## Research references
+
+<details>
+<summary>Papers and sources behind each technique (click to expand)</summary>
 
 The pipeline is an engineering synthesis of well-established, peer-reviewed
 methods rather than novel research. Each major design decision traces back to a
@@ -426,6 +531,8 @@ this repo to the work it is based on.
 > auditable agent. The contribution here is the integration (leakage-safe wiring,
 > resumable state, and LLM-gated judgement calls), not the underlying algorithms.
 
+</details>
+
 ---
 
 ## Development
@@ -442,4 +549,9 @@ needed. The testing rule is contractual: no phase logic, tool module, or
 tested directly (deferred ops must raise `DeferredOpError` outside the fold
 context). Any change to phase ordering updates
 [tests/test_orchestrator.py](tests/test_orchestrator.py) in the same change.
-</content>
+
+---
+
+## License
+
+See [LICENSE](LICENSE).
